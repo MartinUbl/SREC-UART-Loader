@@ -30,8 +30,12 @@ int main(int argc, char** argv)
 
 #ifdef _WIN32
     hComm = CreateFileA(argv[2], GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
+#elif __APPLE__
+    hComm = open(argv[2], O_RDWR | O_NONBLOCK);
 #else
+    std::cerr << "LLLcheck2pre" << std::endl;
     hComm = open(argv[2], O_RDWR);
+    std::cerr << "LLLcheck2" << std::endl;
 #endif
 
     if (hComm <= INVALID_HANDLE_VALUE)
@@ -134,7 +138,8 @@ int main(int argc, char** argv)
                 std::cout << "Progress: " << lineinc << " %" << std::endl;
             }
 
-            //Sleep(10);
+            // Sleep(10);
+            // sleep(1);
         }
     }
 
