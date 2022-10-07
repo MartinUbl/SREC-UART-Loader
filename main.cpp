@@ -33,9 +33,7 @@ int main(int argc, char** argv)
 #elif __APPLE__
     hComm = open(argv[2], O_RDWR | O_NONBLOCK);
 #else
-    std::cerr << "LLLcheck2pre" << std::endl;
     hComm = open(argv[2], O_RDWR);
-    std::cerr << "LLLcheck2" << std::endl;
 #endif
 
     if (hComm <= INVALID_HANDLE_VALUE)
@@ -139,7 +137,7 @@ int main(int argc, char** argv)
             }
 
             // Sleep(10);
-            // sleep(1);
+            sleep(1);
         }
     }
 
