@@ -1,3 +1,29 @@
+/**
+ * This source file is a part of SREC-Loader software used for educational purposes during
+ * the teaching of KIV/OS - Operating Systems course.
+ * 
+ * Copyright (c) 2021 Martin Ubl, Department of Computer Science and Engineering,
+ * University of West Bohemia
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ */
+
 #ifdef _WIN32
 #include <windows.h>
 #else
@@ -10,20 +36,29 @@
 #include <iostream>
 #include <fstream>
 #include <string>
+#include <algorithm>
 
 #ifndef _WIN32
+// On systems other than Windows, define HANDLE as int (as it is, in fact, a file descriptor)
 using HANDLE = int;
-constexpr int INVALID_HANDLE_VALUE = -1;
 #endif
 
+/*
+ * Validates the handle (port opening was successfull)
+ */
 inline bool Is_Valid_Handle(HANDLE handle) {
 #ifdef _WIN32
+    // Windows - invalid file handle is represented by a single reserved value
     return handle != INVALID_HANDLE_VALUE;
 #else
-    return handle > INVALID_HANDLE_VALUE;
+    // *nixes - invalid file handle is negative descriptor value
+    return handle >= 0;
 #endif
 }
 
+/*
+ * Opens the given port for R/W operations
+ */
 inline HANDLE Open_Port(const std::string& portSpec) {
 #ifdef _WIN32
     return CreateFileA(portSpec.c_str(), GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
@@ -34,6 +69,9 @@ inline HANDLE Open_Port(const std::string& portSpec) {
 #endif
 }
 
+/*
+ * Closes the given port
+ */
 inline void Close_Port(HANDLE handle) {
 #ifdef _WIN32
     CloseHandle(handle);
@@ -42,6 +80,18 @@ inline void Close_Port(HANDLE handle) {
 #endif
 }
 
+/*
+ * Sets the port parameters
+ * NOTE: this is highly specific for the purposes of KIV/OS - Operating Systems course, other
+ * implementations of SREC UART bootloader on the device side may require different settings
+ * 
+ * Used parameters (both directions):
+ *      - baud rate: 115200
+ *      - character size: 8 bits
+ *      - stop bits: 1 bit
+ *      - parity: none
+ *      - echo: no
+ */
 inline bool Set_Port_Parameters(HANDLE handle) {
 #ifdef _WIN32
     DCB serialParams;
@@ -90,6 +140,9 @@ inline bool Set_Port_Parameters(HANDLE handle) {
     return true;
 }
 
+/*
+ * Writes a string to a given port handle
+ */
 inline bool Write_Port(HANDLE handle, const std::string& input) {
 #ifdef _WIN32
     unsigned long l;
@@ -99,6 +152,9 @@ inline bool Write_Port(HANDLE handle, const std::string& input) {
 #endif
 }
 
+/*
+ * Reads a single character from given port handle
+ */
 inline bool Read_Port_Char(HANDLE handle, char& target) {
 #ifdef _WIN32
     unsigned long l = 1;
@@ -116,9 +172,8 @@ int main(int argc, char** argv)
         return 3;
     }
 
-    std::string filename = argv[1];
-
-    HANDLE hComm = Open_Port(argv[2]);
+    const std::string filename = argv[1];
+    const HANDLE hComm = Open_Port(argv[2]);
 
     if (!Is_Valid_Handle(hComm)) {
         std::cerr << "Error in opening serial port" << std::endl;
@@ -136,7 +191,8 @@ int main(int argc, char** argv)
 
     // ifstream scope
     {
-        std::ifstream ifile(argv[1]);
+        // open the file
+        std::ifstream ifile(filename);
         if (!ifile.is_open())
         {
             std::cerr << "Error in opening input file" << std::endl;
@@ -144,28 +200,28 @@ int main(int argc, char** argv)
             return 1;
         }
 
-        std::string str((std::istreambuf_iterator<char>(ifile)),
-                         std::istreambuf_iterator<char>());
+        // read the whole file to a string
+        std::string str((std::istreambuf_iterator<char>(ifile)), std::istreambuf_iterator<char>());
+        // rewind to the start
         ifile.seekg(0, std::ios::beg);
 
-        int linecnt = 0;
-        int linecounter = 0;
+        // count all lines in file, so we can display progress
+        auto linecnt = static_cast<size_t>(std::count_if(str.begin(), str.end(), [](char c) { return c == '\n'; }));
+
+        std::cout << "Line count: " << linecnt << std::endl
+                  << "Uploading..." << std::endl;
+
+        // upload the contents
+        size_t linecounter = 0;
         int lineinc = 0;
-        for (int j = 0; j < str.size(); j++)
-        {
-            if (str[j] == '\n')
-                linecnt++;
-        }
-
-        std::cout << "Line count: " << linecnt << std::endl;
-
-        std::cout << "Uploading..." << std::endl;
-
+        // read a single line
         while (std::getline(ifile, ln))
         {
+            // write the line to the port
             linecounter++;
             Write_Port(hComm, ln);
 
+            // display progress every 100 lines
             if (lineinc < ((100 * linecounter) / linecnt))
             {
                 lineinc = ((100 * linecounter) / linecnt);
@@ -176,14 +232,19 @@ int main(int argc, char** argv)
 
     std::cout << "Launching..." << std::endl;
 
+    // write the "G" symbol, that instructs the bootloader to jump to uploaded code (uploading finished)
     Write_Port(hComm, "G");
 
+    // switch to listener mode
     std::cout << "Done. Switching to listener mode." << std::endl << std::endl;
 
+    // this just reads all characters from the port and displays them in console; this is a debug feature,
+    // that simplifies debugging in early stages of development
     char c;
     while (Read_Port_Char(hComm, c))
         std::cout << c;
 
+    // once we are done, close the port
     Close_Port(hComm);
 
     return 0;
