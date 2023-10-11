@@ -160,7 +160,7 @@ inline bool Read_Port_Char(HANDLE handle, char& target) {
     unsigned long l = 1;
     return ReadFile(handle, &target, 1, &l, NULL);
 #else
-    return (read(hComm, &c, 1) == 1);
+    return (read(handle, &target, 1) == 1);
 #endif
 }
 
