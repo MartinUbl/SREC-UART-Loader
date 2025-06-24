@@ -37,6 +37,14 @@
 #include <fstream>
 #include <string>
 #include <algorithm>
+#include <filesystem>
+#include <vector>
+
+enum class NRun_Command {
+    None,
+    Local,      // run local listener only
+    PuTTY,      // run PuTTY on the target serial port
+};
 
 #ifndef _WIN32
 // On systems other than Windows, define HANDLE as int (as it is, in fact, a file descriptor)
@@ -164,16 +172,55 @@ inline bool Read_Port_Char(HANDLE handle, char& target) {
 #endif
 }
 
+/*
+ * Finds PuTTY executable using standard paths
+ */
+const std::string Find_PuTTY() {
+    // following paths are just a basic set of paths where PuTTY can be found; TODO: add more paths and more sophisticated search
+#ifdef _WIN32
+    static const std::vector<std::string> findPaths{
+        "putty", "C:\\Program Files\\PuTTY\\putty.exe", "C:\\Program Files (x86)\\PuTTY\\putty.exe"
+    };
+#else
+    static const std::vector<std::string> findPaths{
+        "putty", "/usr/bin/putty", "/usr/local/bin/putty"
+    };
+#endif
+
+    for (const auto& path : findPaths) {
+        std::filesystem::path p(path);
+        if (std::filesystem::exists(p))
+            return p.string();
+    }
+
+    return "";
+}
+
 int main(int argc, char** argv)
 {
-    if (argc != 3)
+    if (argc < 3 || argc > 4)
     {
-        std::cerr << "Usage:  uart_flasher.exe <filename> <port identifier>" << std::endl;
+        std::cerr << "Usage:  uart_flasher.exe <filename> <port identifier> [run_command]" << std::endl;
         return 3;
     }
 
+    NRun_Command runCommand = NRun_Command::None;
+    if (argc == 4) {
+        std::string runCommandStr = argv[3];
+
+        std::transform(runCommandStr.begin(), runCommandStr.end(), runCommandStr.begin(), ::tolower);
+
+        if (runCommandStr == "local") {
+            runCommand = NRun_Command::Local;
+        }
+        else if (runCommandStr == "putty") {
+            runCommand = NRun_Command::PuTTY;
+        }
+    }
+
     const std::string filename = argv[1];
-    const HANDLE hComm = Open_Port(argv[2]);
+	const std::string port = argv[2];
+    const HANDLE hComm = Open_Port(port);
 
     if (!Is_Valid_Handle(hComm)) {
         std::cerr << "Error in opening serial port" << std::endl;
@@ -213,7 +260,7 @@ int main(int argc, char** argv)
 
         // upload the contents
         size_t linecounter = 0;
-        int lineinc = 0;
+        size_t lineinc = 0;
         // read a single line
         while (std::getline(ifile, ln))
         {
@@ -235,17 +282,44 @@ int main(int argc, char** argv)
     // write the "G" symbol, that instructs the bootloader to jump to uploaded code (uploading finished)
     Write_Port(hComm, "G");
 
-    // switch to listener mode
-    std::cout << "Done. Switching to listener mode." << std::endl << std::endl;
+    std::cout << "Done." << std::endl;
 
-    // this just reads all characters from the port and displays them in console; this is a debug feature,
-    // that simplifies debugging in early stages of development
-    char c;
-    while (Read_Port_Char(hComm, c))
-        std::cout << c;
+    switch (runCommand) {
+        case NRun_Command::Local:
+        {
+            std::cout << "Local command specified, skipping PuTTY launch" << std::endl;
 
-    // once we are done, close the port
-    Close_Port(hComm);
+            // this just reads all characters from the port and displays them in console; this is a debug feature,
+            // that simplifies debugging in early stages of development
+            char c;
+            while (Read_Port_Char(hComm, c))
+                std::cout << c;
+
+            // once we are done, close the port
+            Close_Port(hComm);
+
+            break;
+        }
+        case NRun_Command::PuTTY:
+        {
+            std::cout << "Launching PuTTY on the target serial port" << std::endl;
+
+            // release the port, so PuTTY can open it
+            Close_Port(hComm);
+
+            // find PuTTY executable
+            const std::string puttyPath = Find_PuTTY();
+            if (puttyPath.empty()) {
+                std::cerr << "PuTTY executable not found" << std::endl;
+                return 1;
+            }
+
+            system(("\"" + puttyPath + "\" -serial " + port + " -sercfg 115200,8,n,1,N").c_str());
+            break;
+        }
+        default:
+            break;
+    }
 
     return 0;
 }
