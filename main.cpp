@@ -153,10 +153,49 @@ inline bool Set_Port_Parameters(HANDLE handle) {
  */
 inline bool Write_Port(HANDLE handle, const std::string& input) {
 #ifdef _WIN32
-    unsigned long l;
-    return WriteFile(handle, input.c_str(), static_cast<DWORD>(input.length()), &l, NULL);
+    const char* ptr = input.data();
+    size_t remaining = input.size();
+
+    while (remaining > 0) {
+        DWORD written = 0;
+
+        if (!WriteFile(handle, ptr, static_cast<DWORD>(remaining), &written, NULL)) {
+            return false;
+        }
+
+        if (written == 0) {
+            return false;
+		}
+
+        ptr += written;
+        remaining -= written;
+    }
+
+    return true;
 #else
-    return write(handle, input.c_str(), static_cast<int>(input.length())) > 0;
+    const char* ptr = input.data();
+    size_t remaining = input.size();
+
+    while (remaining > 0) {
+        ssize_t written = write(handle, ptr, remaining);
+
+        if (written < 0) {
+            if (errno == EINTR) {
+                continue;
+			}
+
+            return false;
+        }
+
+        if (written == 0) {
+            return false;
+		}
+
+        ptr += written;
+        remaining -= static_cast<size_t>(written);
+    }
+
+    return true;
 #endif
 }
 
