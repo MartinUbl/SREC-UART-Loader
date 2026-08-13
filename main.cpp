@@ -81,6 +81,58 @@ struct SREC_Image {
     size_t byteCount = 0;
 };
 
+class Progress_Bar {
+public:
+    Progress_Bar(std::string label, size_t total, std::string unit)
+        : m_label(std::move(label)), m_total(total), m_unit(std::move(unit)) {
+    }
+
+    ~Progress_Bar() {
+        if (m_rendered) {
+            std::cout << std::endl;
+        }
+    }
+
+    void Update(size_t current) {
+        if (current > m_total) {
+            current = m_total;
+        }
+
+        const size_t percent = (m_total == 0) ? 100 : (current * 100) / m_total;
+        const size_t filled = (percent * m_width) / 100;
+
+        std::ostringstream line;
+        line << '\r' << m_label << " [";
+        line << std::string(filled, '#');
+        line << std::string(m_width - filled, '.');
+        line << "] " << percent << "% (" << current << "/" << m_total << " " << m_unit << ")";
+
+        const std::string output = line.str();
+        std::cout << output;
+        if (output.size() < m_previousLength) {
+            std::cout << std::string(m_previousLength - output.size(), ' ');
+        }
+        std::cout << std::flush;
+
+        m_previousLength = output.size();
+        m_rendered = true;
+    }
+
+    void Finish() {
+        Update(m_total);
+        std::cout << std::endl;
+        m_rendered = false;
+    }
+
+private:
+    std::string m_label;
+    size_t m_total;
+    std::string m_unit;
+    size_t m_previousLength = 0;
+    bool m_rendered = false;
+    static constexpr size_t m_width = 36;
+};
+
 #ifndef _WIN32
 // On systems other than Windows, define HANDLE as int (as it is, in fact, a file descriptor)
 using HANDLE = int;
@@ -180,18 +232,26 @@ inline bool Set_Port_Parameters(HANDLE handle, int baudRate = Default_Baud_Rate)
 #ifdef _WIN32
     DCB serialParams;
 
-    GetCommState(handle, &serialParams);
+    if (!GetCommState(handle, &serialParams)) {
+        std::cerr << "Could not read serial port settings" << std::endl;
+        return false;
+    }
+
     serialParams.BaudRate = static_cast<DWORD>(baudRate);
     serialParams.ByteSize = 8;
     serialParams.StopBits = ONESTOPBIT;
     serialParams.Parity = NOPARITY;
-    SetCommState(handle, &serialParams);
+
+    if (!SetCommState(handle, &serialParams)) {
+        std::cerr << "Could not apply serial port settings" << std::endl;
+        return false;
+    }
 #else
     struct termios tty;
 
     if (tcgetattr(handle, &tty) != 0)
     {
-        std::cerr << "Error in configuring serial port (1)" << std::endl;
+        std::cerr << "Could not read serial port settings" << std::endl;
         return 2;
     }
 
@@ -217,7 +277,7 @@ inline bool Set_Port_Parameters(HANDLE handle, int baudRate = Default_Baud_Rate)
 
     if (tcsetattr(handle, TCSANOW, &tty) != 0)
     {
-        std::cerr << "Error in configuring serial port (2)" << std::endl;
+        std::cerr << "Could not apply serial port settings" << std::endl;
         return false;
     }
 #endif
@@ -740,7 +800,7 @@ bool Upload_Text_SREC(HANDLE handle, const std::string& filename) {
 
     std::ifstream ifile(filename);
     if (!ifile.is_open()) {
-        std::cerr << "Error in opening input file" << std::endl;
+        std::cerr << "Could not open input file: " << filename << std::endl;
         return false;
     }
 
@@ -752,11 +812,12 @@ bool Upload_Text_SREC(HANDLE handle, const std::string& filename) {
         linecnt++;
     }
 
-    std::cout << "Line count: " << linecnt << std::endl
-              << "Uploading..." << std::endl;
+    std::cout << "Input: SREC text, " << linecnt << " lines" << std::endl
+              << "Protocol: legacy text SREC" << std::endl;
 
     size_t linecounter = 0;
-    size_t lineinc = 0;
+    Progress_Bar progressBar("Upload", linecnt, "lines");
+    progressBar.Update(0);
     while (std::getline(ifile, ln)) {
         linecounter++;
 
@@ -764,12 +825,10 @@ bool Upload_Text_SREC(HANDLE handle, const std::string& filename) {
             return false;
         }
 
-        if (linecnt != 0 && lineinc < ((100 * linecounter) / linecnt)) {
-            lineinc = ((100 * linecounter) / linecnt);
-            std::cout << "Progress: " << lineinc << " %" << std::endl;
-        }
+        progressBar.Update(linecounter);
     }
 
+    progressBar.Finish();
     return true;
 }
 
@@ -780,23 +839,23 @@ bool Upload_Binary_Image(HANDLE handle, const std::string& filename, int baudRat
 
     const SREC_Image image = Load_Binary_Image(filename);
 
-    std::cout << "Block count: " << image.blocks.size() << std::endl
-              << "Payload bytes: " << image.byteCount << std::endl
-              << "Uploading in binary mode..." << std::endl;
+    std::cout << "Input: " << image.blocks.size() << " block(s), " << image.byteCount << " payload bytes" << std::endl
+              << "Protocol: SREC-200 binary" << std::endl;
 
     if (!Write_Port(handle, "UBIN1") || !Wait_For_Binary_ACK(handle)) {
         return false;
     }
 
     if (baudRate != Default_Baud_Rate) {
-        std::cout << "Switching binary transfer to " << baudRate << " baud..." << std::endl;
+        std::cout << "Baud rate: switching to " << baudRate << std::endl;
         if (!Send_Baud_Command(handle, baudRate) || !Set_Port_Parameters(handle, baudRate)) {
             return false;
         }
     }
 
     size_t uploaded = 0;
-    size_t progress = 0;
+    Progress_Bar progressBar("Upload", image.byteCount, "bytes");
+    progressBar.Update(0);
 
     for (const Program_Block& block : image.blocks) {
         if (!Send_Address_Command(handle, Binary_Command::Set_Cursor, block.address)) {
@@ -820,6 +879,7 @@ bool Upload_Binary_Image(HANDLE handle, const std::string& filename, int baudRat
                     offset += commandLength;
                     uploaded += commandLength;
                     zeroRun -= commandLength;
+                    progressBar.Update(uploaded);
                 }
             }
             else {
@@ -860,15 +920,12 @@ bool Upload_Binary_Image(HANDLE handle, const std::string& filename, int baudRat
 
                 offset += chunkLength;
                 uploaded += chunkLength;
-            }
-
-            if (image.byteCount != 0 && progress < ((100 * uploaded) / image.byteCount)) {
-                progress = ((100 * uploaded) / image.byteCount);
-                std::cout << "Progress: " << progress << " %" << std::endl;
+                progressBar.Update(uploaded);
             }
         }
     }
 
+    progressBar.Finish();
     return Send_Address_Command(handle, Binary_Command::Set_Entry, image.entry);
 }
 
@@ -924,28 +981,28 @@ int main(int argc, char** argv)
     const HANDLE hComm = Open_Port(port);
 
     if (!Is_Valid_Handle(hComm)) {
-        std::cerr << "Error in opening serial port" << std::endl;
+        std::cerr << "Could not open serial port: " << port << std::endl;
         return 1;
     }
 
     if (!Set_Port_Parameters(hComm)) {
-        std::cerr << "Error in configuring serial port" << std::endl;
+        std::cerr << "Could not configure serial port: " << port << std::endl;
         return 1;
     }
 
-    std::cout << "Opening serial port successful" << std::endl;
+    std::cout << "Serial port: " << port << " at " << Default_Baud_Rate << " baud, 8N1" << std::endl;
 
     try {
         if (binaryMode) {
             if (!Upload_Binary_Image(hComm, filename, binaryBaudRate)) {
-                std::cerr << "Error in binary upload" << std::endl;
+                std::cerr << "Binary upload failed" << std::endl;
                 Close_Port(hComm);
                 return 1;
             }
         }
         else {
             if (!Upload_Text_SREC(hComm, filename)) {
-                std::cerr << "Error in upload" << std::endl;
+                std::cerr << "Text upload failed" << std::endl;
                 Close_Port(hComm);
                 return 1;
             }
@@ -957,17 +1014,17 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    std::cout << "Launching..." << std::endl;
+    std::cout << "Starting uploaded image..." << std::endl;
 
     // write the "G" symbol, that instructs the bootloader to jump to uploaded code (uploading finished)
     Write_Port(hComm, "G");
 
-    std::cout << "Done." << std::endl;
+    std::cout << "Upload complete." << std::endl;
 
     switch (runCommand) {
         case NRun_Command::Local:
         {
-            std::cout << "Local command specified, skipping PuTTY launch" << std::endl;
+            std::cout << "Serial monitor attached. Press Ctrl+C to stop." << std::endl;
 
             // this just reads all characters from the port and displays them in console; this is a debug feature,
             // that simplifies debugging in early stages of development
@@ -982,7 +1039,7 @@ int main(int argc, char** argv)
         }
         case NRun_Command::PuTTY:
         {
-            std::cout << "Launching PuTTY on the target serial port" << std::endl;
+            std::cout << "Opening PuTTY on " << port << "..." << std::endl;
 
             // release the port, so PuTTY can open it
             Close_Port(hComm);
@@ -990,7 +1047,7 @@ int main(int argc, char** argv)
             // find PuTTY executable
             const std::string puttyPath = Find_PuTTY();
             if (puttyPath.empty()) {
-                std::cerr << "PuTTY executable not found" << std::endl;
+                std::cerr << "Could not find PuTTY executable" << std::endl;
                 return 1;
             }
 
